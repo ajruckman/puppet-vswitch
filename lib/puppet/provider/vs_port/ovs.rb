@@ -34,7 +34,7 @@ Puppet::Type.type(:vs_port).provide(:ovs) do
                           :lacp_time,
                          ]
     end
-    if @resource.provider.class.feature?(:vlan)
+    if vlan?
       sync_properties += [:vlan_mode,
                           :vlan_tag,
                           :vlan_trunks,
@@ -161,5 +161,11 @@ Puppet::Type.type(:vs_port).provide(:ovs) do
   def get_port_interface_column(column)
     uuids = get_port_column('interfaces').scan(UUID_RE)
     uuids.map!{|id| vsctl('get', 'Interface', id, column).strip.tr('"', '')}
+  end
+
+  def vlan?
+    return File.file?('/proc/net/vlan/config')
+  rescue Errno::ENOENT
+    return false
   end
 end
