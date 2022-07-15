@@ -96,7 +96,7 @@ Puppet::Type.newtype(:vs_port) do
     newvalues(:fast, :slow, "")
   end
 
-  newproperty(:vlan_mode) do
+  newproperty(:vlan_mode, :required_features => :vlan) do
     desc "VLAN mode for this port.
 
       Possible values are 'access', 'native-tagged', 'native-untagged' or
@@ -107,7 +107,7 @@ Puppet::Type.newtype(:vs_port) do
     newvalues(:access, :"native-tagged", :"native-untagged", :trunk, "")
   end
 
-  newproperty(:vlan_tag) do
+  newproperty(:vlan_tag, :required_features => :vlan) do
     desc "VLAN id for this port.
 
       For an access port this is the ports implicit VLAN id, for a for a
@@ -134,7 +134,7 @@ Puppet::Type.newtype(:vs_port) do
     end
   end
 
-  newproperty(:vlan_trunks, :array_matching => :all) do
+  newproperty(:vlan_trunks, :array_matching => :all, :required_features => :vlan) do
     desc "Allowed VLAN ids on this port.
 
       This parameter is only meaningful for no access ports. Ports in native-tagged or

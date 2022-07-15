@@ -164,7 +164,7 @@ Puppet::Type.type(:vs_port).provide(:ovs) do
   end
 
   def vlan?
-    return File.file?('/proc/net/vlan/config')
+    File.exist?('/proc/net/vlan/config')
   rescue Errno::ENOENT
     return false
   end
