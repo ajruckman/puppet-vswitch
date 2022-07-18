@@ -116,14 +116,14 @@ describe 'vswitch::ovs' do
             {
               :ovs_package_name  => 'openvswitch-switch',
               :ovs_service_name  => 'openvswitch-switch',
-              :provider          => 'ovs',
+              :provider          => 'ovs_redhat',
               :service_hasstatus => true,
             }
           elsif facts[:operatingsystem] == 'Ubuntu'
             {
               :ovs_package_name  => 'openvswitch-switch',
               :ovs_service_name  => 'openvswitch-switch',
-              :provider          => 'ovs',
+              :provider          => 'ovs_redhat',
               :service_hasstatus => true,
             }
           end

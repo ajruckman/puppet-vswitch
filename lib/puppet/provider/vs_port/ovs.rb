@@ -1,176 +1,170 @@
-require File.expand_path(File.join(File.dirname(__FILE__), '..', '..', '..', 'puppetx', 'redhat', 'ifcfg.rb'))
-require File.expand_path(File.join(File.dirname(__FILE__), '.','ovs.rb'))
+require 'puppet'
 
-Puppet::Type.type(:vs_port).provide(
-  :ovs_redhat,
-  :parent => Puppet::Type.type(:vs_port).provider(:ovs)
-) do
 
-  desc 'Openvswitch port manipulation for RedHat OSes family'
+Puppet::Type.type(:vs_port).provide(:ovs) do
+  desc 'Openvswitch port manipulation'
 
-  BASE ||= '/etc/sysconfig/network-scripts/ifcfg-'
+  UUID_RE ||= /[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89aAbB][a-f0-9]{3}-[a-f0-9]{12}/
 
-  # When not seedling from interface file
-  DEFAULT ||= {
-    'ONBOOT'        => 'yes',
-    'BOOTPROTO'     => 'dhcp',
-    'PEERDNS'       => 'no',
-    'NM_CONTROLLED' => 'no',
-    'NOZEROCONF'    => 'yes'
-  }
+  has_feature :bonding
+  has_feature :vlan
+  has_feature :interface_type
 
-  confine    :osfamily => :redhat
-  defaultfor :osfamily => :redhat
+  commands :vsctl => 'ovs-vsctl'
 
-  commands :ip     => 'ip'
-  commands :ifdown => 'ifdown'
-  commands :ifup   => 'ifup'
-  commands :vsctl  => 'ovs-vsctl'
-
-  def initialize(value={})
-    super(value)
-    # Set interface property although it's not really
-    # supported on this provider. This ensures that all
-    # methodes inherited from the ovs provider work as
-    # expected.
-    @resource[:interface] = @resource[:port]
+  def exists?
+    vsctl('list-ports', @resource[:bridge]).include? @resource[:port]
+  rescue Puppet::ExecutionFailure => e
+    return false
   end
 
   def create
-    unless vsctl('list-ports',
-                 @resource[:bridge]).include? @resource[:port]
-      super
+    # create with first interface, other interfaces will be added later when synchronizing properties
+    vsctl('--', '--id=@iface0', 'create', 'Interface', "name=#{@resource[:interface][0]}", '--', 'add-port', @resource[:bridge], @resource[:port], 'interfaces=@iface0')
+
+    # synchronize properties
+    # Only sync those properties actually supported by the provider. This
+    # allows this provider to be used as a base class for providers not
+    # supporting all properties.
+    sync_properties = []
+    if @resource.provider.class.feature?(:bonding)
+      sync_properties += [:interface,
+                          :bond_mode,
+                          :lacp,
+                          :lacp_time,
+                         ]
     end
-
-    if interface_physical?
-      template = DEFAULT
-      extras = { 'OVS_EXTRA' => "\"set bridge #{@resource[:bridge]} fail_mode=#{@resource[:fail_mode]}\"" }
-
-      if link?
-        extras = dynamic_default if dynamic?
-        if File.exist?(BASE + @resource[:port])
-          template = cleared(from_str(File.read(BASE + @resource[:port])))
-        end
-      end
-
-      port = IFCFG::Port.new(@resource[:port], @resource[:bridge])
-      if vlan?
-        port.set('VLAN' => 'yes')
-      end
-
-      if bonding?
-        port.set('BONDING_MASTER' => 'yes')
-        config = from_str(File.read(BASE + @resource[:port]))
-        port.set('BONDING_OPTS' => config['BONDING_OPTS']) if config.has_key?('BONDING_OPTS')
-      end
-
-      port.save(BASE + @resource[:port])
-
-      bridge = IFCFG::Bridge.new(@resource[:bridge], template)
-      bridge.set(extras) if extras
-      bridge.save(BASE + @resource[:bridge])
-
-      ifdown(@resource[:bridge])
-      ifdown(@resource[:port])
-      ifup(@resource[:port])
-      ifup(@resource[:bridge])
+    if vlan?
+      sync_properties += [:vlan_mode,
+                          :vlan_tag,
+                          :vlan_trunks,
+                         ]
     end
-  end
-
-  def exists?
-    if interface_physical?
-      super &&
-        IFCFG::OVS.exists?(@resource[:port]) &&
-        IFCFG::OVS.exists?(@resource[:bridge])
-    else
-      super
+    if @resource.provider.class.feature?(:interface_type)
+      sync_properties += [:interface_type,
+                         ]
+    end
+    for prop_name in sync_properties
+      property = @resource.property(prop_name)
+      property.sync unless property.safe_insync?(property.retrieve)
     end
   end
 
   def destroy
-    if interface_physical?
-      ifdown(@resource[:bridge])
-      ifdown(@resource[:port])
-      IFCFG::OVS.remove(@resource[:port])
-      IFCFG::OVS.remove(@resource[:bridge])
+    vsctl('del-port', @resource[:bridge], @resource[:port])
+  end
+
+  def interface
+    get_port_interface_column('name')
+  end
+
+  def interface=(value)
+    # find interfaces we want to keep on the port
+    keep = @resource.property(:interface).retrieve() & value
+    keep_uids = keep.map { |iface| vsctl('get', 'Interface', iface, '_uuid').strip }
+    new = value - keep
+    args = ['--'] + new.each_with_index.map { |iface, i| ["--id=@#{i+1}", 'create', 'Interface', "name=#{iface}", '--'] }
+    ifaces = (1..new.length).map { |i| "@#{i}" } + keep_uids
+    args += ['set', 'Port', @resource[:port], "interfaces=#{ifaces.join(',')}"]
+    vsctl(*args)
+  end
+
+  def interface_type
+    types = get_port_interface_column('type').uniq
+    types != nil ? types.join(' ') : :system
+  end
+
+  def interface_type=(value)
+    @resource.property(:interface).retrieve.each do |iface|
+      vsctl('set', 'Interface', iface, "type=#{value}")
     end
-    super
+  end
+
+  def bond_mode
+    get_port_column('bond_mode')
+  end
+
+  def bond_mode=(value)
+    set_port_column('bond_mode', value)
+  end
+
+  def lacp
+    get_port_column('lacp')
+  end
+
+  def lacp=(value)
+    set_port_column('lacp', value)
+  end
+
+  def lacp_time
+    get_port_column('other_config:lacp-time')
+  end
+
+  def lacp_time=(value)
+    set_port_column('other_config:lacp-time', value)
+  end
+
+  def vlan_mode
+    get_port_column('vlan_mode')
+  end
+
+  def vlan_mode=(value)
+    set_port_column('vlan_mode', value)
+  end
+
+  def vlan_tag
+    get_port_column('tag')
+  end
+
+  def vlan_tag=(value)
+    set_port_column('tag', value)
+  end
+
+  def vlan_trunks
+    get_port_column('trunks').scan(/\d+/)
+  end
+
+  def vlan_trunks=(value)
+    set_port_column('trunks', value.join(' '))
   end
 
   private
 
-  def bonding?
-    # To do: replace with iproute2 commands
-    if File.exists?("/proc/net/bonding/#{@resource[:port]}")
-      return true
+  def port_column_command(command, column, value=nil)
+    if value
+      vsctl(command, 'Port', @resource[:port], column, value)
     else
-      return false
+      vsctl('--if-exists', command, 'Port', @resource[:port], column)
     end
-  rescue Errno::ENOENT
-    return false
   end
 
-  def dynamic?
-    device = ''
-    device = ip('addr', 'show', @resource[:port])
-    return device =~ /dynamic/ ? true : false
+  def get_port_column(column)
+    value = port_column_command('get', column).strip
+    if value == '[]' then '' else value end
   end
 
-  def link?
-    if File.read("/sys/class/net/#{@resource[:port]}/operstate") =~ /up/
-      return true
+  def set_port_column(column, value)
+    if ! value or value.empty?
+      # columns with maps need special handling, single map entries
+      # can be removed with the remove command
+      column, key = column.split(':')
+      if ! key
+        port_column_command('clear', column)
+      else
+        port_column_command('remove', [column, key])
+      end
     else
-      return false
+      port_column_command('set', "#{column}=#{value}")
     end
-  rescue Errno::ENOENT
-    return false
   end
 
-  def dynamic_default
-    list = { 'OVSDHCPINTERFACES' => @resource[:port] }
-    # Persistent MAC address taken from interface
-    bridge_mac_address = File.read("/sys/class/net/#{@resource[:port]}/address").chomp
-    if bridge_mac_address != ''
-      list.merge!({ 'OVS_EXTRA' =>
-                      "\"set bridge #{@resource[:bridge]} other-config:hwaddr=#{bridge_mac_address} fail_mode=#{@resource[:fail_mode]}\"" })
-    end
-    list
-  end
-
-  def interface_physical?
-    # OVS ports don't have entries in /sys/class/net
-    # Alias interfaces (ethX:Y) must use ethX entries
-    interface = @resource[:port].sub(/:\d/, '')
-    ! Dir["/sys/class/net/#{interface}"].empty?
-  end
-
-  def from_str(data)
-    items = {}
-    data.each_line do |line|
-      if m = line.match(/^([A-Za-z_]*)=(.*)$/)
-        items.merge!(m[1] => m[2])
-      end
-    end
-    items
-  end
-
-  def cleared(data)
-    data.each do |key, value|
-      case key
-      when /vlan/i
-        data.delete(key)
-      when /bonding/i
-        data.delete(key)
-      end
-    end
+  def get_port_interface_column(column)
+    uuids = get_port_column('interfaces').scan(UUID_RE)
+    uuids.map!{|id| vsctl('get', 'Interface', id, column).strip.tr('"', '')}
   end
 
   def vlan?
-    if File.read('/proc/net/vlan/config') =~ /#{@resource[:port]}/
-      return true
-    else
-      return false
-    end
+    File.exist?('/proc/net/vlan/config')
   rescue Errno::ENOENT
     return false
   end

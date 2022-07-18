@@ -151,7 +151,7 @@ describe 'vswitch::dpdk' do
           {
             :ovs_dpdk_package_name => 'openvswitch-switch-dpdk',
             :ovs_service_name      => 'openvswitch-switch',
-            :provider              => 'ovs',
+            :provider              => 'ovs_redhat',
             :ovsdb_service_name    => 'ovsdb-server',
           }
         when 'RedHat'
